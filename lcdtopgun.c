@@ -9,6 +9,10 @@
  *
  *  History:
  *
+ *  2015-06-07 - 0.3: (Toni Spets) Compatibility bump
+ *   - Compiles and runs on kernel 4.0.4
+ *   - Backwards compatibility was lost
+ *
  *  2008-04-14 - 0.2: (Adolfo R. Brandes) General update
  *   - Compiles and runs on newer kernels (tested up to 2.6.24).
  *   - Rewrote the setting of bits, based on xpad360.
@@ -32,20 +36,13 @@
  */
 
 #include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
-#include <linux/config.h>
-#endif
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/usb.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,17)
-#include <linux/usb_input.h>
-#else
 #include <linux/usb/input.h>
-#endif
 
 static unsigned long debug = 0;
 module_param(debug, ulong, 0444);
@@ -54,7 +51,7 @@ MODULE_PARM_DESC(debug, "Debugging");
 /*
  * Version Information
  */
-#define DRIVER_VERSION "v0.2"
+#define DRIVER_VERSION "v0.3"
 #define DRIVER_AUTHOR "Christophe Thibault <chris@aegis-corp.org>"
 #define DRIVER_DESC "USB EMS LCD TopGun driver"
 #define DRIVER_LICENSE "GPL"
@@ -94,11 +91,7 @@ static struct usb_device_id usb_topgun_id_table [] = {
 
 MODULE_DEVICE_TABLE (usb, usb_topgun_id_table);
 
-static void usb_topgun_irq(struct urb *urb
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
-	, struct pt_regs *regs
-#endif
-)
+static void usb_topgun_irq(struct urb *urb)
 {
 	struct usb_topgun *topgun = urb->context;
 	unsigned char *data = topgun->data;
@@ -118,10 +111,6 @@ static void usb_topgun_irq(struct urb *urb
 	default:		/* error */
 		goto resubmit;
 	}
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
-	input_regs(dev, regs);
-#endif
 
 	if (debug) {
 		printk(KERN_INFO "topgun_debug: data :");
@@ -160,14 +149,14 @@ static void usb_topgun_irq(struct urb *urb
 resubmit:
 	status = usb_submit_urb(urb, GFP_ATOMIC);
 	if (status)
-		err("can't resubmit intr, %s-%s/input0, status %d",
+		printk(KERN_ERR "can't resubmit intr, %s-%s/input0, status %d",
 				topgun->usbdev->bus->bus_name,
 				topgun->usbdev->devpath, status);
 }
 
 static int usb_topgun_open(struct input_dev *dev)
 {
-	struct usb_topgun *topgun = dev->private;
+	struct usb_topgun *topgun = input_get_drvdata(dev);
 	int status;
 
 	if (topgun->open++)
@@ -175,7 +164,7 @@ static int usb_topgun_open(struct input_dev *dev)
 
 	topgun->irq->dev = topgun->usbdev;
 	if ((status = usb_submit_urb(topgun->irq, GFP_KERNEL))) {
-		err("open input urb failed: %d", status);
+		printk(KERN_ERR "open input urb failed: %d", status);
 		topgun->open--;
 		return -EIO;
 	}
@@ -185,7 +174,7 @@ static int usb_topgun_open(struct input_dev *dev)
 
 static void usb_topgun_close(struct input_dev *dev)
 {
-	struct usb_topgun *topgun = dev->private;
+	struct usb_topgun *topgun = input_get_drvdata(dev);
 
 	if (!--topgun->open)
 		usb_unlink_urb(topgun->irq);
@@ -224,7 +213,7 @@ static int usb_topgun_probe(struct usb_interface *intf, const struct usb_device_
 		return -ENOMEM;
 	}
 
-	topgun->data = usb_buffer_alloc(usbdev, 8, GFP_ATOMIC, &topgun->data_dma);
+	topgun->data = usb_alloc_coherent(usbdev, 8, GFP_ATOMIC, &topgun->data_dma);
 	if (!topgun->data) {
 		input_free_device(input_dev);
 		kfree(topgun);
@@ -233,7 +222,7 @@ static int usb_topgun_probe(struct usb_interface *intf, const struct usb_device_
 
 	topgun->irq = usb_alloc_urb(0, GFP_KERNEL);
 	if (!topgun->irq) {
-		usb_buffer_free(usbdev, 8, topgun->data, topgun->data_dma);
+		usb_free_coherent(usbdev, 8, topgun->data, topgun->data_dma);
 		input_free_device(input_dev);
 		kfree(topgun);
 		return -ENODEV;
@@ -264,14 +253,13 @@ static int usb_topgun_probe(struct usb_interface *intf, const struct usb_device_
 	input_dev->name = topgun->name;
 	input_dev->phys = topgun->phys;
 	usb_to_input_id(usbdev, &input_dev->id);
-	input_dev->cdev.dev = &intf->dev;
-	input_dev->private = topgun;
 	input_dev->open = usb_topgun_open;
 	input_dev->close = usb_topgun_close;
+	input_set_drvdata(input_dev, topgun);
 
 	/* Start name manipulation. */
 	if (!(buf = kmalloc(63, GFP_KERNEL))) {
-		usb_buffer_free(usbdev, 8, topgun->data, topgun->data_dma);
+		usb_free_coherent(usbdev, 8, topgun->data, topgun->data_dma);
 		kfree(topgun);
 		return -ENOMEM;
 	}
@@ -297,7 +285,12 @@ static int usb_topgun_probe(struct usb_interface *intf, const struct usb_device_
 	topgun->irq->transfer_dma = topgun->data_dma;
 	topgun->irq->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
-	input_register_device(topgun->dev);
+	if (input_register_device(topgun->dev)) {
+		input_free_device(topgun->dev);
+		printk(KERN_ERR "failed to register device\n");
+		kfree(topgun);
+		return -ENODEV;
+	}
 
 	if (debug)
 		printk(KERN_INFO "input: %s on %s\n", topgun->name, path);
@@ -316,7 +309,7 @@ static void usb_topgun_disconnect(struct usb_interface *intf)
 		usb_unlink_urb(topgun->irq);
 		input_unregister_device(topgun->dev);
 		usb_free_urb(topgun->irq);
-		usb_buffer_free(interface_to_usbdev(intf), 8, topgun->data, topgun->data_dma);
+		usb_free_coherent(interface_to_usbdev(intf), 8, topgun->data, topgun->data_dma);
 		kfree(topgun);
 	}
 }
@@ -332,7 +325,7 @@ static int __init usb_topgun_init(void)
 {
 	int retval = usb_register(&usb_topgun_driver);
 	if (retval == 0) 
-		info(DRIVER_DESC " " DRIVER_VERSION " initialized" );
+		printk(KERN_INFO DRIVER_DESC " " DRIVER_VERSION " initialized" );
 	return retval;
 }
 
