@@ -137,8 +137,14 @@ static void usb_topgun_irq(struct urb *urb)
 	gun |= data[2];
 
 	/* stick */
-	input_report_abs(dev, ABS_X, gun);
-	input_report_abs(dev, ABS_Y, data[4]);
+	if (data[2] == 1 && data[3] == 0 && data[4] == 5) {
+		/* when pointer is off-screen, report absolute center */
+		input_report_abs(dev, ABS_X, 416);
+		input_report_abs(dev, ABS_Y, 128);
+	} else {
+		input_report_abs(dev, ABS_X, gun);
+		input_report_abs(dev, ABS_Y, data[4]);
+	}
 
 	/* digital pad */
 	input_report_abs(dev, ABS_HAT0X, x);
