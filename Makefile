@@ -1,4 +1,4 @@
-TOPDIR          := /usr/src/linux
+TOPDIR          := /usr/src/kernels/$(shell uname -r)
 MOD_ROOT        :=
 PWD             := $(shell pwd)
 
